@@ -41,7 +41,7 @@ struct NotificationRowView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 8) {
                     HStack(alignment: .center, spacing: 2) {
-                        Text(notification.shortDateTime())
+                        Text(notification.dateTime())
                             .font(.subheadline)
                             .foregroundColor(.gray)
                         if [1,2,4,5].contains(notification.priority) {

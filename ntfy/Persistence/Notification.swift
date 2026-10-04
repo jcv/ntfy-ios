@@ -22,6 +22,20 @@ extension Notification {
 
         return dateFormatter.string(from: date)
     }
+
+    /// Like shortDateTime(), but always includes the time, e.g. "Yesterday, 11:42 PM" or "10/1/26, 3:15 PM"
+    func dateTime() -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(self.time))
+        let dateFormatter = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            dateFormatter.dateStyle = .none
+        } else {
+            dateFormatter.dateStyle = .short
+            dateFormatter.doesRelativeDateFormatting = true
+        }
+        dateFormatter.timeStyle = .short
+        return dateFormatter.string(from: date)
+    }
     
     func formatMessage() -> String {
         let message = message ?? ""
