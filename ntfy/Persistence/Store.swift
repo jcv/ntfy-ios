@@ -1,6 +1,7 @@
 import Foundation
 import CoreData
 import Combine
+import UserNotifications
 
 /// Handles all persistence in the app by storing/loading subscriptions and notifications using Core Data.
 /// There are sadly a lot of hacks in here, because I don't quite understand this fully.
@@ -434,12 +435,15 @@ class Store: ObservableObject {
     }
 
     private func saveNotifications(_ messages: [Message], withSubscription subscription: Subscription) throws {
-        let ids = messages.map(\.id)
+        try applyDeleteAndClearEvents(messages, withSubscription: subscription)
+
+        let messagesToStore = Message.undeleted(messages)
+        let ids = messagesToStore.map(\.id)
         let existingRequest = Notification.fetchRequest()
         existingRequest.predicate = NSPredicate(format: "id IN %@", ids)
         let existingNotifications = try context.fetch(existingRequest)
         let existingIDs = Set(existingNotifications.compactMap(\.id))
-        let newMessages = messages.filter { !existingIDs.contains($0.id) }
+        let newMessages = messagesToStore.filter { !existingIDs.contains($0.id) }
 
         guard !newMessages.isEmpty else {
             if let lastMessage = messages.last {
@@ -452,6 +456,7 @@ class Store: ObservableObject {
         for message in newMessages {
             let notification = Notification(context: context)
             notification.id = message.id
+            notification.sequenceId = message.effectiveSequenceId()
             notification.time = message.time
             notification.message = message.message ?? ""
             notification.title = message.title ?? ""
@@ -485,6 +490,60 @@ class Store: ObservableObject {
         }
         subscription.lastNotificationId = messages.last?.id
         try context.save()
+    }
+
+    /// Handles "message_delete" and "message_clear" events, see https://docs.ntfy.sh/publish/#updating-deleting-notifications.
+    /// Deletes remove the matching notifications from the store. Clears only dismiss the system notification, since the app does
+    /// not track a read state. Changes are saved by the caller.
+    private func applyDeleteAndClearEvents(_ messages: [Message], withSubscription subscription: Subscription) throws {
+        let deletedSequenceIds = messages.filter { $0.event == "message_delete" }.map { $0.effectiveSequenceId() }
+        let clearedSequenceIds = messages.filter { $0.event == "message_clear" }.map { $0.effectiveSequenceId() }
+        if let baseUrl = subscription.baseUrl, let topic = subscription.topic {
+            cancelDeliveredNotifications(baseUrl: baseUrl, topic: topic, sequenceIds: Set(deletedSequenceIds + clearedSequenceIds))
+        }
+        guard !deletedSequenceIds.isEmpty else {
+            return
+        }
+
+        // Notifications stored before sequenceId was persisted can only be matched by their ID
+        let request = Notification.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "subscription == %@ AND (sequenceId IN %@ OR (sequenceId == nil AND id IN %@))",
+            subscription, deletedSequenceIds, deletedSequenceIds
+        )
+        try context.fetch(request).forEach { notification in
+            Log.d(Store.tag, "Deleting notification with ID \(notification.id ?? "<unknown>") (sequence ID deleted)")
+            deleteAttachmentLocalFile(for: notification)
+            context.delete(notification)
+        }
+    }
+
+    private func cancelDeliveredNotifications(baseUrl: String, topic: String, sequenceIds: Set<String>) {
+        guard !sequenceIds.isEmpty else {
+            return
+        }
+        let notificationCenter = UNUserNotificationCenter.current()
+        notificationCenter.getDeliveredNotifications { notifications in
+            let ids = notifications
+                .filter { notification in
+                    let userInfo = notification.request.content.userInfo
+                    let notificationBaseUrl = userInfo["base_url"] as? String ?? Config.appBaseUrl
+                    guard userInfo["topic"] as? String == topic, normalizeBaseUrl(notificationBaseUrl) == normalizeBaseUrl(baseUrl) else {
+                        return false
+                    }
+                    guard let message = Message.from(userInfo: userInfo) else {
+                        return false
+                    }
+                    return sequenceIds.contains(message.effectiveSequenceId())
+                }
+                .map { notification in
+                    notification.request.identifier
+                }
+            if !ids.isEmpty {
+                Log.d(Store.tag, "Cancelling \(ids.count) delivered notification(s) for deleted or cleared sequence IDs")
+                notificationCenter.removeDeliveredNotifications(withIdentifiers: ids)
+            }
+        }
     }
 
     private func deleteAttachmentLocalFile(for notification: Notification) {

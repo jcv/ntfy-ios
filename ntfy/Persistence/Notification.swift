@@ -328,6 +328,7 @@ struct Message: Decodable {
     var time: Int64
     var event: String
     var topic: String
+    var sequenceId: String?
     var message: String?
     var title: String?
     var priority: Int16?
@@ -340,6 +341,7 @@ struct Message: Decodable {
     enum CodingKeys: String, CodingKey {
         case id, time, event, topic, message, title, priority, tags, actions, click, attachment
         case pollId = "poll_id"
+        case sequenceId = "sequence_id"
     }
 
     init(
@@ -347,6 +349,7 @@ struct Message: Decodable {
         time: Int64,
         event: String,
         topic: String,
+        sequenceId: String? = nil,
         message: String? = nil,
         title: String? = nil,
         priority: Int16? = nil,
@@ -360,6 +363,7 @@ struct Message: Decodable {
         self.time = time
         self.event = event
         self.topic = topic
+        self.sequenceId = sequenceId
         self.message = message
         self.title = title
         self.priority = priority
@@ -376,6 +380,7 @@ struct Message: Decodable {
         time = try container.decode(Int64.self, forKey: .time)
         event = try container.decode(String.self, forKey: .event)
         topic = try container.decode(String.self, forKey: .topic)
+        sequenceId = try container.decodeIfPresent(String.self, forKey: .sequenceId)
         message = try container.decodeIfPresent(String.self, forKey: .message)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         priority = try container.decodeIfPresent(Int16.self, forKey: .priority)
@@ -395,6 +400,7 @@ struct Message: Decodable {
             "time": String(time),
             "event": event,
             "topic": topic,
+            "sequence_id": sequenceId ?? "",
             "message": message ?? "",
             "title": title ?? "",
             "priority": String(priority ?? 3),
@@ -422,6 +428,7 @@ struct Message: Decodable {
             Log.d(Store.tag, "Unknown or irrelevant message", userInfo)
             return nil
         }
+        let sequenceId = userInfo["sequence_id"] as? String
         let message = userInfo["message"] as? String
         let title = userInfo["title"] as? String
         let priority = Int16(userInfo["priority"] as? String ?? "3") ?? 3
@@ -447,6 +454,7 @@ struct Message: Decodable {
             time: timeInt,
             event: event,
             topic: topic,
+            sequenceId: sequenceId?.isEmpty == false ? sequenceId : nil,
             message: message,
             title: title,
             priority: priority,
@@ -456,6 +464,32 @@ struct Message: Decodable {
             pollId: pollId,
             attachment: attachment
         )
+    }
+
+    /// The server omits sequence_id when it is equal to the message ID
+    func effectiveSequenceId() -> String {
+        if let sequenceId, !sequenceId.isEmpty {
+            return sequenceId
+        }
+        return id
+    }
+
+    /// Returns the "message" events that are not deleted by a later "message_delete" event in the same list,
+    /// so that a poll returning both a message and its deletion does not briefly store or show it
+    static func undeleted(_ messages: [Message]) -> [Message] {
+        var lastDeleteIndex: [String: Int] = [:]
+        for (index, message) in messages.enumerated() where message.event == "message_delete" {
+            lastDeleteIndex[message.effectiveSequenceId()] = index
+        }
+        return messages.enumerated().compactMap { index, message in
+            guard message.event == "message" else {
+                return nil
+            }
+            if let deleteIndex = lastDeleteIndex[message.effectiveSequenceId()], deleteIndex > index {
+                return nil
+            }
+            return message
+        }
     }
 }
 

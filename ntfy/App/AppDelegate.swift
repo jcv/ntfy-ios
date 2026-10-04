@@ -97,8 +97,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate, ObservableObject {
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable : Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         Log.d(tag, "Background notification received", userInfo)
         
-        // Exit out early if this message is not expected
+        // Delete and clear events are sent as background notifications, see server_firebase.go
         let topic = userInfo["topic"] as? String ?? ""
+        if let message = Message.from(userInfo: userInfo), message.event == "message_delete" || message.event == "message_clear" {
+            let didSave = Store.shared.save(notificationFromMessage: message, baseUrl: Config.appBaseUrl, topic: message.topic)
+            completionHandler(didSave ? .newData : .noData)
+            return
+        }
+
+        // Exit out early if this message is not expected
         if topic != pollTopic {
             completionHandler(.noData)
             return
@@ -129,7 +136,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, ObservableObject {
                         didReceiveNewData = true
                     }
                 }
-                self.showNotificationsSequentially(baseUrl: baseUrl, messages: messages) {
+                self.showNotificationsSequentially(baseUrl: baseUrl, messages: Message.undeleted(messages)) {
                     group.leave()
                 }
             }

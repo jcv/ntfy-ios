@@ -33,7 +33,7 @@ class NotificationService: UNNotificationServiceExtension {
             switch message.event {
             case "poll_request":
                 handlePollRequest(request, bestAttemptContent, message, contentHandler)
-            case "message":
+            case "message", "message_delete", "message_clear":
                 let baseUrl = userInfo["base_url"]  as? String ?? Config.appBaseUrl // messages only come for the main server
                 handleMessage(request, bestAttemptContent, baseUrl, message, contentHandler)
             default:
@@ -59,6 +59,11 @@ class NotificationService: UNNotificationServiceExtension {
         guard store?.save(notificationFromMessage: message, baseUrl: baseUrl, topic: message.topic) == true else {
             Log.w(tag, "Subscription \(topicUrl(baseUrl: baseUrl, topic: message.topic)) unknown")
             contentHandler(request.content)
+            return
+        }
+        if message.event != "message" {
+            // Delete and clear events only update the store, there is nothing to display
+            contentHandler(UNNotificationContent())
             return
         }
         let user = store?.getBasicUser(baseUrl: baseUrl)
